@@ -62,6 +62,12 @@ credential never falls back to the reusable dev credential.
 
 ## The environment is the filesystem boundary
 
+A local supervisor may embed the client by setting `T3CODE_LOCAL_FRAME_ANCESTOR` to its exact
+`http://127.0.0.1:<port>` origin and explicitly binding the T3 server to `127.0.0.1`. Other configurations
+retain frame denial. This changes only the HTML framing policy, never pairing, RPC scopes or provider
+permissions. The supervisor and T3 must use distinct origins and credentials; never expose a native bridge
+or the supervisor's credential to the embedded client.
+
 Projects are organizational boundaries, not filesystem sandboxes. `filesystem:read` permits reading
 any file the server's OS user can read (for example, artifacts an agent writes in a temp directory);
 relative paths and writes remain constrained by

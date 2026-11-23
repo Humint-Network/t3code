@@ -486,6 +486,31 @@ it.layer(
     }),
   );
 
+  it.effect("allows only the configured local supervisor to frame SPA routes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const staticDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-local-frame-" });
+      yield* fs.writeFileString(path.join(staticDir, "index.html"), "<html>workspace</html>");
+      const config = yield* ServerConfig.ServerConfig;
+      const request = yield* makeStaticRequest(staticDir).pipe(
+        Effect.provideService(ServerConfig.ServerConfig, {
+          ...config,
+          host: "127.0.0.1",
+          localFrameAncestor: "http://127.0.0.1:8765",
+        }),
+      );
+      for (const resource of ["/", "/threads/example"]) {
+        const response = yield* request(resource);
+        expect(response.status).toBe(200);
+        expect(response.headers["content-security-policy"]).toBe(
+          "frame-ancestors http://127.0.0.1:8765",
+        );
+        expect(response.headers["x-frame-options"]).toBeUndefined();
+      }
+    }),
+  );
+
   it.effect("closes static descriptors after GET, HEAD, 304, and request cancellation", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -33,6 +33,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { OtlpTracer, OtlpSerialization } from "effect/observability";
 
 import * as ServerConfig from "./config.ts";
+import { localEmbeddingHeaders } from "./localEmbedding.ts";
 import { ASSET_ROUTE_PREFIX, readMcpAppHtml, resolveAsset } from "./assets/AssetAccess.ts";
 import { sourceControlMediaResponse } from "./assets/sourceControlMediaResponse.ts";
 import { statMediaFile, streamMediaFile, type OpenMediaFile } from "./assets/MediaFile.ts";
@@ -637,12 +638,6 @@ const streamStaticFile = (file: FileSystem.File, size: bigint) =>
     }),
   );
 
-// The app can approve agents and start threads in one click, so no other site may frame it.
-const SPA_FRAME_HEADERS = {
-  "Content-Security-Policy": "frame-ancestors 'none'",
-  "X-Frame-Options": "DENY",
-};
-
 const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
   function* (immutableBuildAssets: ReadonlySet<string>) {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -743,7 +738,7 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
     };
     const headers: Record<string, string> = {
       "Cache-Control": cacheControl,
-      ...(isHtml ? SPA_FRAME_HEADERS : {}),
+      ...(isHtml ? localEmbeddingHeaders(config.localFrameAncestor, config.host) : {}),
       ...validators(fileInfo),
     };
     const etag = headers.ETag;
@@ -780,7 +775,7 @@ const handleStaticAndDevRequest = Effect.fn("handleStaticAndDevRequest")(
       return HttpServerResponse.uint8Array(bytes, {
         headers: {
           "Cache-Control": cacheControl,
-          ...(isHtml ? SPA_FRAME_HEADERS : {}),
+          ...(isHtml ? localEmbeddingHeaders(config.localFrameAncestor, config.host) : {}),
           ...validators({ ...info, size: ByteSize.bytes(bytes.byteLength) }),
         },
         contentType,

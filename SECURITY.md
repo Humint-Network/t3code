@@ -69,6 +69,9 @@ once it has one.
 
 ## Intended, not vulnerabilities
 
+- An explicitly configured local supervisor can frame the client from one exact loopback origin.
+  The default remains frame denial; local embedding changes no authentication or execution grant.
+
 - A full-scope token gives a shell. Leaking one is serious, but the bug is the
   leak, not the shell.
 - The default grant includes `access:write`, so a full session can mint more
