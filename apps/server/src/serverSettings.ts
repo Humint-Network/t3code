@@ -735,6 +735,7 @@ const make = Effect.gen(function* () {
   const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
   const startedRef = yield* Ref.make(false);
   const startedDeferred = yield* Deferred.make<void, ServerSettingsError>();
+  const pollingRequired = yield* Deferred.make<void>();
   const watcherScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(watcherScope, Exit.void));
 
@@ -1299,8 +1300,9 @@ const make = Effect.gen(function* () {
 
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {
+      const previous = yield* getSettingsFromCache;
       const { settings } = yield* reloadSettings;
-      yield* emitChange(settings);
+      if (!Equal.equals(previous, settings)) yield* emitChange(settings);
     }),
   );
 
@@ -1319,6 +1321,9 @@ const make = Effect.gen(function* () {
       ),
       Stream.as(undefined),
       Stream.ensuring(Effect.sync(markReady)),
+      Stream.catch(() =>
+        Stream.fromEffect(Deferred.succeed(pollingRequired, undefined)).pipe(Stream.drain),
+      ),
     );
   };
 
@@ -1400,8 +1405,19 @@ const make = Effect.gen(function* () {
         ),
       );
 
+      const pollingEvents = Stream.fromEffect(
+        Deferred.await(pollingRequired).pipe(
+          Effect.andThen(
+            Effect.logWarning(
+              "Settings file watch unavailable; checking for changes periodically.",
+            ),
+          ),
+        ),
+      ).pipe(Stream.drain, Stream.concat(Stream.tick("1 second")));
+
       // Saves emit multiple events; fs.watch may fire before content is flushed.
       yield* Stream.merge(settingsEvents, linkTargetEvents).pipe(
+        Stream.merge(pollingEvents),
         Stream.debounce(Duration.millis(100)),
         Stream.runForEach(() => revalidateAndEmitSafely),
       );

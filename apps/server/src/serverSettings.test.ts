@@ -3194,11 +3194,10 @@ it.live("reloads a symlinked settings file after its target directory is replace
   ),
 );
 
-it.effect("starts with symlinked settings when the settings directory watch fails", () =>
+it.effect("refreshes symlinked settings when native file watches fail", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    let settingsDirectory: string | undefined;
     const watchFailure = PlatformError.systemError({
       _tag: "Unknown",
       module: "FileSystem",
@@ -3207,8 +3206,7 @@ it.effect("starts with symlinked settings when the settings directory watch fail
     });
     const failingFileSystem = FileSystem.FileSystem.of({
       ...fs,
-      watch: (directory, options) =>
-        directory === settingsDirectory ? Stream.fail(watchFailure) : fs.watch(directory, options),
+      watch: () => Stream.fail(watchFailure),
     });
     const settingsLayer = layerServerSettings().pipe(
       Layer.provide(Layer.succeed(FileSystem.FileSystem, failingFileSystem)),
@@ -3217,7 +3215,6 @@ it.effect("starts with symlinked settings when the settings directory watch fail
     yield* Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const service = yield* ServerSettingsModule.ServerSettingsService;
-      settingsDirectory = path.dirname(config.settingsPath);
       const dotfiles = yield* fs.makeTempDirectoryScoped({ prefix: "t3-settings-dotfiles-" });
       const target = path.join(dotfiles, "settings.json");
       yield* fs.writeFileString(target, `{ "responseStreamingMode": "paragraph" }`);
@@ -3228,6 +3225,33 @@ it.effect("starts with symlinked settings when the settings directory watch fail
 
       const settings = yield* service.getSettings;
       assert.equal(settings.responseStreamingMode, "paragraph");
+      const changes = yield* service.subscribeChanges;
+      yield* fs.writeFileString(target, `{ "responseStreamingMode": "turn" }`);
+      yield* TestClock.adjust("2 seconds");
+      const refreshed = yield* service.withSettingsSnapshot(Effect.succeed);
+      assert.equal(refreshed.responseStreamingMode, "turn");
+      const published = yield* changes.pipe(
+        Stream.filter((value) => value.responseStreamingMode === "turn"),
+        Stream.runHead,
+      );
+      assert.isTrue(Option.isSome(published));
+
+      const repeated: ServerSettings[] = [];
+      yield* changes.pipe(
+        Stream.runForEach((value) => Effect.sync(() => repeated.push(value))),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* TestClock.adjust("2 seconds");
+      yield* service.withSettingsSnapshot(() => Effect.void);
+      assert.deepEqual(repeated, []);
+
+      const replacement = path.join(dotfiles, "replacement.json");
+      yield* fs.writeFileString(replacement, `{ "responseStreamingMode": "paragraph" }`);
+      yield* fs.remove(config.settingsPath);
+      yield* fs.symlink(replacement, config.settingsPath);
+      yield* TestClock.adjust("2 seconds");
+      const repointed = yield* service.withSettingsSnapshot(Effect.succeed);
+      assert.equal(repointed.responseStreamingMode, "paragraph");
     }).pipe(Effect.provide(settingsLayer));
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
