@@ -129,7 +129,32 @@ const findExecutable = Effect.fnUntraced(function* (
 });
 
 const make = Effect.gen(function* () {
-  const native = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const provided = yield* ChildProcessSpawner.ChildProcessSpawner;
+  // Node may throw before emitting a spawn error (for example a macOS sandbox
+  // refusal). Keep those operational errors in the typed channel, so callers
+  // can treat an unavailable helper as unavailable instead of crashing startup.
+  const native = ChildProcessSpawner.make((command) =>
+    provided.spawn(command).pipe(
+      Effect.catchDefect((cause) => {
+        if (
+          !(cause instanceof Error) ||
+          !("code" in cause) ||
+          (cause.code !== "EPERM" && cause.code !== "EACCES" && cause.code !== "ENOENT")
+        )
+          return Effect.die(cause);
+        return Effect.fail(
+          PlatformError.systemError({
+            _tag: cause.code === "ENOENT" ? "NotFound" : "PermissionDenied",
+            module: "ChildProcess",
+            method: "spawn",
+            pathOrDescriptor: command._tag === "StandardCommand" ? command.command : undefined,
+            syscall: "spawn",
+            cause,
+          }),
+        );
+      }),
+    ),
+  );
   if ((yield* HostProcess.Platform) !== "linux") return native;
   if (!(yield* Effect.promise(supportsEnvChdir))) return native;
   const path = yield* Path.Path;
@@ -173,6 +198,7 @@ const make = Effect.gen(function* () {
 
 /**
  * On Linux with GNU `env`, replaces the provided `ChildProcessSpawner` with one that never
- * hands libuv a cwd or a PATH search; elsewhere it passes the provided one through.
+ * hands libuv a cwd or a PATH search. On every platform, synchronous OS spawn
+ * refusals retain the same typed error contract as asynchronous spawn failures.
  */
 export const layer = Layer.effect(ChildProcessSpawner.ChildProcessSpawner, make);

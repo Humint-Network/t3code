@@ -198,3 +198,30 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("NonBlockingSpa
     }),
   );
 });
+
+it.effect.each([
+  ["EPERM", "PermissionDenied"],
+  ["EACCES", "PermissionDenied"],
+  ["ENOENT", "NotFound"],
+  ["EIO", "defect"],
+])("reports a synchronous %s spawn refusal without losing its error category", ([code, expected]) =>
+  Effect.gen(function* () {
+    const cause = Object.assign(new Error(`spawn ${code}`), { code, syscall: "spawn" });
+    const native = ChildProcessSpawner.make(() => Effect.die(cause));
+    const guarded = NonBlockingSpawner.layer.pipe(
+      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, native)),
+      Layer.provide(NodeServices.layer),
+    );
+    const result = yield* ChildProcessSpawner.ChildProcessSpawner.use((spawner) =>
+      spawner.string(ChildProcess.make("/bin/ps", ["-p", "123"])),
+    ).pipe(
+      Effect.provide(guarded),
+      Effect.match({
+        onSuccess: () => "unexpected success",
+        onFailure: (error) => error.reason._tag,
+      }),
+      Effect.catchDefect(() => Effect.succeed("defect")),
+    );
+    expect(result).toBe(expected);
+  }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "darwin")),
+);
