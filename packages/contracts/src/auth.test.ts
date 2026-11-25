@@ -10,6 +10,7 @@ import {
   authScopeResponse,
   AuthSessionState,
   sessionGrantsScope,
+  sessionHasLegacyPermissions,
 } from "./auth.ts";
 
 describe("authorization grants", () => {
@@ -53,6 +54,22 @@ describe("authorization grants", () => {
     expect(decodeOldScopes(response.scopes)).toEqual(response.scopes);
     expect(response.permissions).toEqual(AuthStandardClientScopes);
     expect(response.scopes).not.toContain("filesystem:read");
+  });
+
+  it.each([
+    { permissions: ["orchestration:read"], legacy: false },
+    { permissions: ["orchestration:operate", "terminal:operate"], legacy: false },
+    { permissions: ["access:read", "relay:read"], legacy: false },
+    { permissions: [], legacy: false },
+    { permissions: ["review:write"], legacy: true },
+    { permissions: ["review:write", "filesystem:read"], legacy: true },
+  ] as const)("requires retired-scope evidence for $permissions", ({ permissions, legacy }) => {
+    const session = { authenticated: true, ...authScopeResponse(permissions) };
+    expect(sessionHasLegacyPermissions(session)).toBe(legacy);
+    expect(sessionHasLegacyPermissions({ ...session, authenticated: false })).toBe(false);
+    for (const scope of AuthEnvironmentScope.literals) {
+      expect(sessionGrantsScope(session, scope)).toBe(permissions.some((value) => value === scope));
+    }
   });
 
   it("ignores unknown response permissions without falling back to broader scopes", () => {

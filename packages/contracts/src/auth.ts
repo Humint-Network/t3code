@@ -143,13 +143,8 @@ export function sessionGrantsScope(
 }
 
 export function sessionHasLegacyPermissions(session: SessionGrantInput): boolean {
-  const permissions = session.permissions;
-  return (
-    session.authenticated &&
-    permissions !== undefined &&
-    permissions.every((scope) => legacyScopes.has(scope)) &&
-    Object.values(legacyParents).some((parent) => permissions.includes(parent))
-  );
+  // Current restricted grants can use only older names; only a retired scope proves migration.
+  return session.authenticated && session.permissions?.includes(AuthReviewWriteScope) === true;
 }
 
 // Shell and full-access agent scopes already confer access and relay authority.
