@@ -617,6 +617,12 @@ const make = Effect.gen(function* () {
           path.resolve(keybindingsConfigDir, event.path) === keybindingsConfigPathResolved
         );
       }),
+      Stream.as(undefined),
+      Stream.catch(() =>
+        Stream.fromEffect(
+          Effect.logWarning("Shortcut file watch unavailable; checking for changes periodically."),
+        ).pipe(Stream.drain, Stream.concat(Stream.tick("1 second"))),
+      ),
       Stream.debounce(Duration.millis(100)),
     );
 

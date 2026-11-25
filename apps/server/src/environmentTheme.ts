@@ -344,8 +344,13 @@ const make = Effect.gen(function* () {
             (error) => error.reason._tag === "NotFound",
             () => Stream.empty,
           ),
-          Stream.ignoreCause({ log: true }),
           Stream.ensuring(Effect.sync(markReady)),
+          Stream.catch(() =>
+            Stream.fromEffect(
+              Effect.logWarning("Theme file watch unavailable; checking for changes periodically."),
+            ).pipe(Stream.drain, Stream.concat(Stream.tick("1 second"))),
+          ),
+          Stream.ignoreCause({ log: true }),
         );
         return Stream.merge(events, Stream.fromEffect(Deferred.await(ready)));
       }),

@@ -8,8 +8,11 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as SharedKeybindings from "@t3tools/shared/keybindings";
@@ -53,6 +56,74 @@ const readKeybindingsConfig = (configPath: string) =>
   });
 
 it.layer(NodeServices.layer)("keybindings", (it) => {
+  it.effect("publishes external shortcut edits when native file watches fail", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const failure = PlatformError.systemError({
+        _tag: "Unknown",
+        module: "FileSystem",
+        method: "watch",
+      });
+      const failing = FileSystem.FileSystem.of({ ...fs, watch: () => Stream.fail(failure) });
+      yield* Effect.gen(function* () {
+        const service = yield* Keybindings.Keybindings;
+        const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+        yield* service.start;
+        const changes = yield* service.subscribeChanges;
+        const snapshots = yield* changes.pipe(Stream.toQueue({ capacity: "unbounded" }));
+        yield* writeKeybindingsConfig(keybindingsConfigPath, [
+          { key: "mod+shift+9", command: "terminal.toggle" },
+        ]);
+        yield* TestClock.adjust("2 seconds");
+        const snapshot = yield* service.getSnapshot;
+        assert.isTrue(
+          snapshot.keybindings.some(
+            (rule) =>
+              rule.command === "terminal.toggle" &&
+              rule.shortcut.key === "9" &&
+              rule.shortcut.shiftKey,
+          ),
+        );
+        const changed = yield* Queue.take(snapshots);
+        assert.isTrue(
+          changed.keybindings.some(
+            (rule) =>
+              rule.command === "terminal.toggle" &&
+              rule.shortcut.key === "9" &&
+              rule.shortcut.shiftKey,
+          ),
+        );
+        yield* TestClock.adjust("2 seconds");
+        assert.equal(yield* Queue.size(snapshots), 0);
+        yield* writeKeybindingsConfig(keybindingsConfigPath, [
+          { key: "mod+shift+8", command: "terminal.toggle" },
+        ]);
+        yield* TestClock.adjust("2 seconds");
+        const nextSnapshot = yield* service.getSnapshot;
+        assert.isTrue(
+          nextSnapshot.keybindings.some(
+            (rule) =>
+              rule.command === "terminal.toggle" &&
+              rule.shortcut.key === "8" &&
+              rule.shortcut.shiftKey,
+          ),
+        );
+        const next = yield* Queue.take(snapshots);
+        assert.isTrue(
+          next.keybindings.some(
+            (rule) =>
+              rule.command === "terminal.toggle" &&
+              rule.shortcut.key === "8" &&
+              rule.shortcut.shiftKey,
+          ),
+        );
+      }).pipe(
+        Effect.provide(
+          layerKeybindings().pipe(Layer.provide(Layer.succeed(FileSystem.FileSystem, failing))),
+        ),
+      );
+    }),
+  );
   it.effect("parses shortcuts including plus key", () =>
     Effect.sync(() => {
       assert.deepEqual(SharedKeybindings.parseKeybindingShortcut("mod+j"), {

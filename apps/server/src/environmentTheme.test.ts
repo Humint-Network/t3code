@@ -12,10 +12,12 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
@@ -111,6 +113,69 @@ const currentThemes = Effect.gen(function* () {
 });
 
 describe("environment theme", () => {
+  it.effect("publishes external theme edits when native file watches fail", () => {
+    let directoryReads = 0;
+    return withEnvironmentThemes(
+      { "nightfall.json": encodeThemeFile(NIGHTFALL_THEME) },
+      Effect.gen(function* () {
+        const service = yield* EnvironmentTheme.EnvironmentThemeService;
+        const { environmentThemesDir } = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const snapshots = yield* service.streamChanges.pipe(
+          Stream.map((themes) => themes.map((theme) => theme.name)),
+          Stream.toQueue({ capacity: "unbounded" }),
+        );
+        assert.deepEqual(yield* Queue.take(snapshots), ["Nightfall"]);
+        // Drain initial reads before editing; later observations use only the subscribed stream.
+        yield* TestClock.adjust("2 seconds");
+        yield* service.current;
+        let previousReads = directoryReads;
+        yield* fs.writeFileString(
+          path.join(environmentThemesDir, "nightfall.json"),
+          encodeThemeFile({ ...NIGHTFALL_THEME, name: "Changed" }),
+        );
+        yield* TestClock.adjust("2 seconds");
+        assert.isAbove(directoryReads, previousReads);
+        assert.deepEqual(yield* Queue.take(snapshots), ["Changed"]);
+        yield* TestClock.adjust("2 seconds");
+        assert.equal(yield* Queue.size(snapshots), 0);
+        previousReads = directoryReads;
+        yield* fs.remove(environmentThemesDir, { recursive: true });
+        yield* TestClock.adjust("2 seconds");
+        assert.isAbove(directoryReads, previousReads);
+        assert.deepEqual(yield* Queue.take(snapshots), []);
+        previousReads = directoryReads;
+        yield* fs.makeDirectory(environmentThemesDir);
+        yield* fs.writeFileString(
+          path.join(environmentThemesDir, "shared.json"),
+          encodeThemeFile(SHARED_THEME),
+        );
+        yield* TestClock.adjust("2 seconds");
+        assert.isAbove(directoryReads, previousReads);
+        assert.deepEqual(yield* Queue.take(snapshots), ["Shared Light"]);
+      }),
+      {
+        wrapFileSystem: (fs) =>
+          FileSystem.FileSystem.of({
+            ...fs,
+            readDirectory: (directory) =>
+              Effect.suspend(() => {
+                directoryReads++;
+                return fs.readDirectory(directory);
+              }),
+            watch: () =>
+              Stream.fail(
+                PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "FileSystem",
+                  method: "watch",
+                }),
+              ),
+          }),
+      },
+    );
+  });
   it.effect("follows the directory rather than the set read at start", () =>
     withEnvironmentThemes(
       { "nightfall.json": encodeThemeFile(NIGHTFALL_THEME) },
