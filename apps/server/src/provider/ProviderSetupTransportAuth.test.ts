@@ -117,6 +117,7 @@ const token = (
   f: Effect.Success<typeof fixture>,
   s: Effect.Success<ReturnType<typeof start>>,
   badNonce = false,
+  beforeKeys = Effect.void,
 ) =>
   Effect.gen(function* () {
     yield* f.auth.controller.complete("native-owner", {
@@ -160,6 +161,7 @@ const token = (
     });
     const jwks = yield* f.next;
     assert.equal(jwks.url, "https://auth.openai.com/jwks");
+    yield* beforeKeys;
     yield* f.reply(jwks.id, {
       keys: [{ ...pair.publicKey.export({ format: "jwk" }), kid: "qa", alg: "RS256", use: "sig" }],
     });
@@ -190,16 +192,57 @@ it.effect(
       }),
     ),
 );
-it.effect("retains identity validation and never stores a mismatched nonce", () =>
+it.effect("allows native key verification beyond the standalone HTTP deadline", () =>
   provide(
     Effect.gen(function* () {
       const f = yield* fixture;
       const s = yield* start(f);
-      yield* token(f, s, true);
+      yield* token(f, s, false, TestClock.adjust("6 seconds"));
+      yield* f.phase("succeeded");
+      assert.equal(Option.getOrThrow(yield* f.auth.read).email, "qa@example.invalid");
+    }),
+  ),
+);
+it.effect("retains identity validation for delayed keys and never stores a mismatched nonce", () =>
+  provide(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const s = yield* start(f);
+      yield* token(f, s, true, TestClock.adjust("6 seconds"));
       yield* f.phase("failed");
       assert.isTrue(Option.isNone(yield* f.auth.read));
     }),
   ),
+);
+it.effect("native key verification expiry denies late keys and stores no account", () =>
+  provide(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const s = yield* start(f);
+      yield* token(f, s, false, TestClock.adjust("16 seconds")).pipe(Effect.flip);
+      yield* f.phase("failed");
+      assert.isTrue(Option.isNone(yield* f.auth.read));
+      assert.equal(yield* f.transport.take(f.lease), null);
+    }),
+  ),
+);
+it.effect(
+  "native cancellation during key verification denies late keys and stores no account",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const s = yield* start(f);
+        yield* token(
+          f,
+          s,
+          false,
+          f.auth.controller.cancel("native-owner", s.state.flowId!).pipe(Effect.orDie),
+        ).pipe(Effect.flip);
+        assert.isTrue(Option.isNone(yield* f.auth.read));
+        assert.equal(yield* f.transport.take(f.lease), null);
+      }),
+    ),
 );
 it.effect("native cancellation denies a late token response and stores no account", () =>
   provide(

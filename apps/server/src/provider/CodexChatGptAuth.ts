@@ -251,9 +251,9 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       ),
       Effect.flatMap((response) => response.json),
       Effect.flatMap(decodeKeySet),
-      // Bounds the body read too, as jose's remote set did; a stalled endpoint fails the sign-in.
+      // Native mediation includes installed signature checks; keep its request budget through body decoding.
       Effect.timeoutOrElse({
-        duration: "5 seconds",
+        duration: managed ? "15 seconds" : "5 seconds",
         orElse: () => Effect.fail(failure("verify", "Could not reach ChatGPT sign-in. Try again.")),
       }),
       Effect.tap((fetched) =>
