@@ -97,7 +97,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { useShallow } from "zustand/react/shallow";
 import { draftModelSelectionApplies } from "./lib/chatThreadActions";
 import { createDeferredStorage, createMemoryStorage } from "./lib/storage";
-import { getDefaultServerModel } from "./providerModels";
+import { getDefaultServerModel, hasRuntimeModelCatalog } from "./providerModels";
 import {
   replaceComposerContextReferences,
   toComposerContextId,
@@ -1336,7 +1336,7 @@ export function deriveEffectiveComposerModelState(input: {
         input.settings,
         input.providers,
         activeSelection.model,
-        { preserveUnavailableSelection: true },
+        { preserveUnavailableSelection: hasRuntimeModelCatalog(input.selectedProvider) },
       ) ??
       (input.selectedProvider === "antigravity" ? "" : null) ??
       resolveAppModelSelection(

@@ -5,7 +5,8 @@ import { localEmbeddingHeaders } from "./localEmbedding.ts";
 describe("supervised local embedding", () => {
   it("allows only the exact local parent on an explicitly loopback-bound server", () => {
     expect(localEmbeddingHeaders("http://127.0.0.1:8765", "127.0.0.1")).toEqual({
-      "Content-Security-Policy": "frame-ancestors http://127.0.0.1:8765",
+      "Content-Security-Policy":
+        "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; frame-ancestors http://127.0.0.1:8765",
     });
   });
 

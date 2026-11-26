@@ -1,3 +1,5 @@
+import * as Config from "effect/Config";
+import * as ProviderSetupTransport from "./ProviderSetupTransport.ts";
 // @effect-diagnostics nodeBuiltinImport:off - OAuth loopback listener uses Node APIs.
 import * as NodeHttp from "node:http";
 import {
@@ -166,7 +168,31 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       ),
     );
   });
-  const http = yield* HttpClient.HttpClient;
+  const managed = yield* Config.Boolean("T3CODE_ICORE_PROJECTS").pipe(
+    Config.withDefault(false),
+    Effect.orDie,
+  );
+  const ambientHttp = yield* HttpClient.HttpClient;
+  const transport = yield* Effect.serviceOption(ProviderSetupTransport.ProviderSetupTransport);
+  if (managed && Option.isNone(transport))
+    return yield* new ProviderSetupError({
+      instanceId: options.instanceId,
+      operation: "setup",
+      detail: "Return to iCore to connect this account.",
+    });
+  const http =
+    managed && Option.isSome(transport)
+      ? yield* transport.value.client(options.instanceId).pipe(
+          Effect.mapError(
+            () =>
+              new ProviderSetupError({
+                instanceId: options.instanceId,
+                operation: "setup",
+                detail: "Return to iCore to connect this account.",
+              }),
+          ),
+        )
+      : ambientHttp;
   const store = yield* ProviderCredentialStore.make("codex-chatgpt", options.instanceId);
   const registrationStore = yield* ProviderCredentialStore.make(
     "codex-chatgpt-registration",
@@ -515,6 +541,8 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     method: string,
     context: ProviderAuthFlowContext,
   ) {
+    if (managed && context.callbackMode !== "client")
+      return yield* failure("callback", "Start ChatGPT sign-in from iCore.");
     const endpoints = yield* discover;
     const existing = yield* read;
     const previous = Option.getOrUndefined(existing);
@@ -881,6 +909,45 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       );
     return record;
   }).pipe(Effect.uninterruptible, withSessionLock, lock.withPermit);
+  const modelAccess = lock
+    .withPermit(
+      withSessionLock(
+        Effect.gen(function* () {
+          if (resource !== RESOURCE)
+            return yield* failure("access", "Review the ChatGPT connection in iCore.");
+          const before = yield* store.revision;
+          if (Option.isNone(before))
+            return yield* failure("access", "Review the ChatGPT connection in iCore.");
+          const saved = yield* readSessions;
+          const active = saved.sessions.filter(
+            (session) => session.clientId === saved.activeClientId,
+          );
+          const record = active[0];
+          if (
+            active.length !== 1 ||
+            !record ||
+            !record.scopes.includes(REQUIRED_SCOPE) ||
+            record.expiresAt <= (yield* Clock.currentTimeMillis) ||
+            !/^[\x21-\x7e]{1,32768}$/.test(record.accessToken)
+          )
+            return yield* failure("access", "Review the ChatGPT connection in iCore.");
+          const after = yield* store.revision;
+          if (
+            Option.isNone(after) ||
+            after.value !== before.value ||
+            record.expiresAt <= (yield* Clock.currentTimeMillis)
+          )
+            return yield* failure("access", "The ChatGPT connection changed. Review it in iCore.");
+          return {
+            accessToken: record.accessToken,
+            expiresAt: record.expiresAt,
+            kind: "chatgpt-managed" as const,
+            resource: RESOURCE,
+          } as const;
+        }),
+      ),
+    )
+    .pipe(Effect.mapError(() => failure("access", "Review the ChatGPT connection in iCore.")));
   const logout = Effect.gen(function* () {
     const credentials = Option.getOrUndefined(yield* read);
     let confirmed = !credentials?.refreshToken;
@@ -1114,7 +1181,8 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     );
   };
   return {
-    controller: { ...controller, reconnectProfile, importProfile },
+    http,
+    controller: { ...controller, reconnectProfile, importProfile, modelAccess },
     read,
     access,
     profileKey,

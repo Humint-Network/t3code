@@ -1,3 +1,8 @@
+import * as CodingNativeTranscript from "./orchestration-v2/CodingNativeTranscript.ts";
+import * as ProviderSetupTransport from "./provider/ProviderSetupTransport.ts";
+import * as CodingThreadReservation from "./orchestration-v2/CodingThreadReservation.ts";
+import * as ProjectRegistration from "./project/ProjectRegistration.ts";
+import * as StoredProjectBinding from "./project/StoredProjectBinding.ts";
 import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -192,6 +197,7 @@ import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRe
 import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/server/AcpRegistryRuntimeCoordinator";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
+import * as ProviderLaunchBinding from "./provider/ProviderLaunchBinding.ts";
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as NpmRelease from "./cloud/npmRelease.ts";
@@ -1515,6 +1521,8 @@ export const layerWsRpc = (
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
+      const codingThreadReservation = yield* CodingThreadReservation.make;
+      const codingNativeTranscript = yield* CodingNativeTranscript.make;
       const random = yield* SecureRandom.SecureRandom;
       // RPC client ids are only unique within one socket; terminals share viewers across sockets.
       const terminalViewerPrefix = yield* random.uuidV4();
@@ -1569,6 +1577,8 @@ export const layerWsRpc = (
       const acpRegistrySessions = yield* AcpRegistrySessions.AcpRegistrySessions;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+      const providerSetupTransport = yield* ProviderSetupTransport.ProviderSetupTransport;
+      const providerLaunchBinding = yield* ProviderLaunchBinding.ProviderLaunchBinding;
       const providerInstallation = yield* ProviderInstallation.ProviderInstallation;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
@@ -2428,6 +2438,28 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.serverProbe]: (_input) =>
           Effect.map(DateTime.now, (now) => ({ serverTime: DateTime.formatIso(now) })),
+        [WS_METHODS.serverNativeEngineStatus]: (input) => providerSetupTransport.status(input),
+        [WS_METHODS.serverAttestNativeEngine]: (input) => providerSetupTransport.attest(input),
+        [WS_METHODS.serverBeginProviderSetupTransport]: (input) =>
+          providerSetupTransport.begin(input),
+        [WS_METHODS.serverTakeProviderSetupTransport]: (input) =>
+          providerSetupTransport.take(input),
+        [WS_METHODS.serverCompleteProviderSetupTransport]: (input) =>
+          providerSetupTransport.complete(input),
+        [WS_METHODS.serverCloseProviderSetupTransport]: (input) =>
+          providerSetupTransport.close(input),
+        [WS_METHODS.serverAcquireModelAccess]: (input) => providerLaunchBinding.acquire(input),
+        [WS_METHODS.serverGetProviderLaunchBinding]: (input) => providerLaunchBinding.read(input),
+        [WS_METHODS.serverReserveCodingThread]: (input) => codingThreadReservation.reserve(input),
+        [WS_METHODS.serverRecordCodingTranscript]: (input) => codingNativeTranscript.record(input),
+        [WS_METHODS.serverRegisterProject]: (input) =>
+          ProjectRegistration.register(input).pipe(
+            Effect.provideService(ProjectService.ProjectService, projectService),
+          ),
+        [WS_METHODS.serverGetStoredProjectBinding]: (input) =>
+          StoredProjectBinding.read(input).pipe(
+            Effect.provideService(ProjectStore.ProjectStoreV2, projectStore),
+          ),
         [WS_METHODS.serverGetConfig]: (_input) =>
           loadServerConfig({
             usageLimitsCommand: false,

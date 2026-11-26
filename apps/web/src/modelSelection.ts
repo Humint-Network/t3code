@@ -74,14 +74,13 @@ export interface AppModelOption {
   isUnavailable?: boolean;
 }
 
-function appendUnavailableDynamicModelSelection(
+function appendUnavailableModelSelection(
   options: AppModelOption[],
   rawModels: ReadonlyArray<ServerProvider["models"][number]>,
   provider: ProviderDriverKind,
   selectedModel: string | null | undefined,
   hiddenModels: ReadonlyArray<string>,
 ): AppModelOption[] {
-  if (!hasRuntimeModelCatalog(provider)) return options;
   const slug = normalizeCustomModelSlug(selectedModel);
   if (!slug) return options;
   if (isRuntimeModelDefaultAlias(provider, slug)) return options;
@@ -197,11 +196,11 @@ function getAppModelOptions(
   }
 
   const preferences = readInstanceModelPreferences(settings, defaultInstanceId);
-  return appendUnavailableDynamicModelSelection(
+  return appendUnavailableModelSelection(
     applyInstanceModelPreferences(options, preferences),
     rawModels,
     provider,
-    selectedModel,
+    hasRuntimeModelCatalog(provider) ? selectedModel : null,
     preferences.hiddenModels,
   );
 }
@@ -238,7 +237,7 @@ export function getAppModelOptionsForInstance(
   }
 
   const preferences = readInstanceModelPreferences(settings, entry.instanceId);
-  return appendUnavailableDynamicModelSelection(
+  return appendUnavailableModelSelection(
     applyInstanceModelPreferences(options, preferences),
     entry.models,
     entry.driverKind,
@@ -281,7 +280,7 @@ export function resolveAppModelSelectionForInstance(
   if (resolvedSelection) {
     return resolvedSelection;
   }
-  if (resolutionOptions?.preserveUnavailableSelection && hasRuntimeModelCatalog(entry.driverKind)) {
+  if (resolutionOptions?.preserveUnavailableSelection) {
     const unavailableSelection = normalizeCustomModelSlug(selectedModel);
     const hiddenModels = readInstanceModelPreferences(settings, entry.instanceId).hiddenModels;
     if (

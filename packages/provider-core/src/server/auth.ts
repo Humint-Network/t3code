@@ -10,6 +10,15 @@ import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 export interface ProviderAuthController {
+  readonly modelAccess?: Effect.Effect<
+    {
+      readonly accessToken: string;
+      readonly expiresAt: number;
+      readonly kind: "chatgpt-managed";
+      readonly resource: "https://api.openai.com/v1";
+    },
+    ProviderSetupError
+  >;
   readonly credentialBinding?: { readonly owner: "provider" | "t3"; readonly key: string };
   readonly reconnectProfile?: (
     methodId: string,

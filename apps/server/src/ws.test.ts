@@ -1,3 +1,5 @@
+import * as ProviderSetupTransport from "./provider/ProviderSetupTransport.ts";
+import { ProviderLaunchBindingUnavailable } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { WebSocket } from "@effect/platform-node/NodeWS";
@@ -8,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   AuthAccessReadScope,
+  CommandId,
   type AuthEnvironmentScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -115,6 +118,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
+import * as ProviderLaunchBinding from "./provider/ProviderLaunchBinding.ts";
 import * as AcpRegistrySessions from "./provider/AcpRegistrySessions.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
@@ -826,6 +830,8 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(ProviderSetupTransport.ProviderSetupTransport)({}),
+  Layer.mock(ProviderLaunchBinding.ProviderLaunchBinding)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(SecretCheck.SecretCheck)({}),
@@ -2807,6 +2813,250 @@ it.effect("a session that can only read sees a workflow run but cannot steer it"
       refused.map((error) => error._tag),
       Array.from({ length: 3 }, () => "EnvironmentAuthorizationError"),
     );
+    assert.deepEqual(calls, []);
+  }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+);
+
+it.effect("launch binding RPC enforces read scope and routes only the explicit selection", () =>
+  Effect.gen(function* () {
+    const method = WS_METHODS.serverGetProviderLaunchBinding;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof import("./auth/RpcAuthorization.ts").RPC_REQUIRED_SCOPES,
+          typeof method
+        > => tag !== method,
+      ),
+    );
+    const input = {
+      projectId: ProjectId.make("binding-project"),
+      instanceId: ProviderInstanceId.make("codex-test"),
+      model: "model-a",
+      runtimeMode: "approval-required" as const,
+    };
+    const result = {
+      instance: input.instanceId,
+      driver: ProviderDriverKind.make("codex"),
+      model: input.model,
+      runtime_mode: input.runtimeMode,
+      revision: "a".repeat(64),
+      available: true as const,
+    };
+    const calls: Array<unknown> = [];
+    let ready = true;
+    const services = Layer.mergeAll(
+      layerUnusedConfigRpcServices,
+      Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+      Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+      Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+      Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+      Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+      Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      Layer.succeed(ProviderLaunchBinding.ProviderLaunchBinding, {
+        acquire: () => Effect.fail(new ProviderLaunchBindingUnavailable()),
+        read: (selection) =>
+          Effect.suspend(() => {
+            calls.push(selection);
+            return ready
+              ? Effect.succeed(result)
+              : Effect.fail(new ProviderLaunchBindingUnavailable());
+          }),
+      }),
+    );
+    const browser = yield* ServerBrowser.ServerBrowser;
+    const client = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("binding-test"),
+              subject: "binding-test",
+              method: "browser-session-cookie",
+              scopes: [...scopes],
+            },
+            {},
+            browser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+        ),
+      );
+    const denied = yield* client([]);
+    const error = yield* denied[method](input).pipe(Effect.flip);
+    assert.equal(error._tag, "EnvironmentAuthorizationError");
+    assert.deepEqual(calls, []);
+    const reader = yield* client([AuthOrchestrationReadScope]);
+    assert.deepEqual(yield* reader[method](input), result);
+    assert.deepEqual(calls, [input]);
+    ready = false;
+    const unavailable = yield* reader[method](input).pipe(Effect.flip);
+    assert.equal(unavailable._tag, "ProviderLaunchBindingUnavailable");
+    assert.equal(calls.length, 2);
+  }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+);
+
+it.effect("stored project RPC enforces read scope and reads the exact stored identity", () =>
+  Effect.gen(function* () {
+    const method = WS_METHODS.serverGetStoredProjectBinding;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof import("./auth/RpcAuthorization.ts").RPC_REQUIRED_SCOPES,
+          typeof method
+        > => tag !== method,
+      ),
+    );
+    const input = { projectId: ProjectId.make("stored-project") };
+    const result = {
+      project_id: input.projectId,
+      workspace_root: "/synthetic/project",
+      folders: [],
+      created_at: "2026-11-25T00:00:00.000Z",
+      deleted_at: null,
+    };
+    const calls: Array<unknown> = [];
+    let ready = true;
+    const services = Layer.mergeAll(
+      layerUnusedConfigRpcServices,
+      Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+      Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+      Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+      Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+      Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+      Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      Layer.mock(ProjectStore.ProjectStoreV2)({
+        get: (projectId, options) =>
+          Effect.suspend(() => {
+            calls.push({ projectId, options });
+            return ready
+              ? Effect.succeedSome({
+                  projectId,
+                  workspaceRoot: result.workspace_root,
+                  trackedFolders: [],
+                  createdAt: result.created_at,
+                  updatedAt: result.created_at,
+                  deletedAt: null,
+                  title: "Synthetic",
+                  hasCustomTitle: false,
+                  defaultThreadEnvMode: null,
+                  autoPull: false,
+                  faviconPath: null,
+                  projectIcon: null,
+                  pinnedAt: null,
+                  archivedAt: null,
+                  defaultModelSelection: null,
+                  scripts: [],
+                })
+              : Effect.succeedNone;
+          }),
+      }),
+    );
+    const browser = yield* ServerBrowser.ServerBrowser;
+    const client = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("binding-test"),
+              subject: "binding-test",
+              method: "browser-session-cookie",
+              scopes: [...scopes],
+            },
+            {},
+            browser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+        ),
+      );
+    const denied = yield* client([]);
+    const error = yield* denied[method](input).pipe(Effect.flip);
+    assert.equal(error._tag, "EnvironmentAuthorizationError");
+    assert.deepEqual(calls, []);
+    const reader = yield* client([AuthOrchestrationReadScope]);
+    assert.deepEqual(yield* reader[method](input), result);
+    assert.deepEqual(calls, [{ projectId: input.projectId, options: { includeDeleted: true } }]);
+    ready = false;
+    assert.isNull(yield* reader[method](input));
+    assert.equal(calls.length, 2);
+  }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
+);
+
+it.effect("read-only project inspection cannot create a project", () =>
+  Effect.gen(function* () {
+    const method = WS_METHODS.projectsMutate;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof import("./auth/RpcAuthorization.ts").RPC_REQUIRED_SCOPES,
+          typeof method
+        > => tag !== method,
+      ),
+    );
+    const input = {
+      type: "project.create" as const,
+      commandId: CommandId.make("synthetic-create"),
+      projectId: ProjectId.make("synthetic"),
+      title: "Synthetic",
+      workspaceRoot: "/synthetic/root",
+      createWorkspaceRootIfMissing: false,
+      scripts: [],
+      trackedFolders: [],
+    };
+    const calls: Array<unknown> = [];
+    const services = Layer.mergeAll(
+      layerUnusedConfigRpcServices,
+      Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+      Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+      Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+      Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+      Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+      Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      Layer.mock(ProjectService.ProjectService)({
+        create: () =>
+          Effect.sync(() => {
+            calls.push("create");
+          }).pipe(Effect.andThen(Effect.die("unexpected creation"))),
+      }),
+    );
+    const browser = yield* ServerBrowser.ServerBrowser;
+    const client = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("binding-test"),
+              subject: "binding-test",
+              method: "browser-session-cookie",
+              scopes: [...scopes],
+            },
+            {},
+            browser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+        ),
+      );
+    for (const scopes of [[], [AuthOrchestrationReadScope]]) {
+      const reader = yield* client(scopes);
+      const error = yield* reader[method](input).pipe(Effect.flip);
+      assert.equal(error._tag, "EnvironmentAuthorizationError");
+    }
     assert.deepEqual(calls, []);
   }).pipe(Effect.provide(layerWorkflowRpcTest), Effect.scoped),
 );

@@ -1,4 +1,37 @@
 import {
+  CodingNativeTranscriptInput,
+  CodingNativeTranscriptResult,
+  CodingNativeTranscriptUnavailable,
+} from "./codingNativeTranscript.ts";
+import {
+  ProviderNativeEngineCheck,
+  ProviderNativeEngineStatus,
+  ProviderNativeEngineAttestation,
+  ProviderSetupTransportBegin,
+  ProviderSetupTransportLease,
+  ProviderSetupTransportRequest,
+  ProviderSetupTransportComplete,
+  ProviderSetupTransportUnavailable,
+} from "./providerSetupTransport.ts";
+import {
+  CodingThreadReservationInput,
+  CodingThreadReservationResult,
+  CodingThreadReservationUnavailable,
+} from "./codingThreadReservation.ts";
+import { ProjectRegistrationInput, ProjectRegistrationUnavailable } from "./projectRegistration.ts";
+import {
+  StoredProjectBindingInput,
+  StoredProjectBindingResult,
+  StoredProjectBindingUnavailable,
+} from "./storedProjectBinding.ts";
+import {
+  ProviderModelAccessInput,
+  ProviderModelAccessResult,
+  ProviderLaunchBindingInput,
+  ProviderLaunchBindingResult,
+  ProviderLaunchBindingUnavailable,
+} from "./providerLaunchBinding.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -582,6 +615,18 @@ export const WS_METHODS = {
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
+  serverNativeEngineStatus: "server.nativeEngineStatus",
+  serverAttestNativeEngine: "server.attestNativeEngine",
+  serverBeginProviderSetupTransport: "server.beginProviderSetupTransport",
+  serverTakeProviderSetupTransport: "server.takeProviderSetupTransport",
+  serverCompleteProviderSetupTransport: "server.completeProviderSetupTransport",
+  serverCloseProviderSetupTransport: "server.closeProviderSetupTransport",
+  serverAcquireModelAccess: "server.acquireModelAccess",
+  serverGetProviderLaunchBinding: "server.getProviderLaunchBinding",
+  serverGetStoredProjectBinding: "server.getStoredProjectBinding",
+  serverReserveCodingThread: "server.reserveCodingThread",
+  serverRecordCodingTranscript: "server.recordCodingTranscript",
+  serverRegisterProject: "server.registerProject",
   serverGetNpmRelease: "server.getNpmRelease",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
@@ -763,6 +808,84 @@ const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   payload: Schema.Struct({}),
   success: ServerConfig,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+const WsServerRecordCodingTranscriptRpc = Rpc.make(WS_METHODS.serverRecordCodingTranscript, {
+  payload: CodingNativeTranscriptInput,
+  success: CodingNativeTranscriptResult,
+  error: Schema.Union([CodingNativeTranscriptUnavailable, EnvironmentAuthorizationError]),
+});
+
+const WsServerReserveCodingThreadRpc = Rpc.make(WS_METHODS.serverReserveCodingThread, {
+  payload: CodingThreadReservationInput,
+  success: CodingThreadReservationResult,
+  error: Schema.Union([CodingThreadReservationUnavailable, EnvironmentAuthorizationError]),
+});
+
+const WsServerRegisterProjectRpc = Rpc.make(WS_METHODS.serverRegisterProject, {
+  payload: ProjectRegistrationInput,
+  success: StoredProjectBindingResult,
+  error: Schema.Union([ProjectRegistrationUnavailable, EnvironmentAuthorizationError]),
+});
+
+const WsServerGetStoredProjectBindingRpc = Rpc.make(WS_METHODS.serverGetStoredProjectBinding, {
+  payload: StoredProjectBindingInput,
+  success: StoredProjectBindingResult,
+  error: Schema.Union([StoredProjectBindingUnavailable, EnvironmentAuthorizationError]),
+});
+
+const WsServerNativeEngineStatusRpc = Rpc.make(WS_METHODS.serverNativeEngineStatus, {
+  payload: ProviderNativeEngineCheck,
+  success: ProviderNativeEngineStatus,
+  error: Schema.Union([ProviderSetupTransportUnavailable, EnvironmentAuthorizationError]),
+});
+const WsServerAttestNativeEngineRpc = Rpc.make(WS_METHODS.serverAttestNativeEngine, {
+  payload: ProviderNativeEngineAttestation,
+  success: ProviderNativeEngineStatus,
+  error: Schema.Union([ProviderSetupTransportUnavailable, EnvironmentAuthorizationError]),
+});
+const WsServerBeginProviderSetupTransportRpc = Rpc.make(
+  WS_METHODS.serverBeginProviderSetupTransport,
+  {
+    payload: ProviderSetupTransportBegin,
+    success: ProviderSetupTransportLease,
+    error: Schema.Union([ProviderSetupTransportUnavailable, EnvironmentAuthorizationError]),
+  },
+);
+const WsServerTakeProviderSetupTransportRpc = Rpc.make(
+  WS_METHODS.serverTakeProviderSetupTransport,
+  {
+    payload: ProviderSetupTransportLease,
+    success: Schema.NullOr(ProviderSetupTransportRequest),
+    error: Schema.Union([ProviderSetupTransportUnavailable, EnvironmentAuthorizationError]),
+  },
+);
+const WsServerCompleteProviderSetupTransportRpc = Rpc.make(
+  WS_METHODS.serverCompleteProviderSetupTransport,
+  {
+    payload: ProviderSetupTransportComplete,
+    success: Schema.Void,
+    error: Schema.Union([ProviderSetupTransportUnavailable, EnvironmentAuthorizationError]),
+  },
+);
+const WsServerCloseProviderSetupTransportRpc = Rpc.make(
+  WS_METHODS.serverCloseProviderSetupTransport,
+  {
+    payload: ProviderSetupTransportLease,
+    success: Schema.Void,
+    error: Schema.Union([ProviderSetupTransportUnavailable, EnvironmentAuthorizationError]),
+  },
+);
+const WsServerAcquireModelAccessRpc = Rpc.make(WS_METHODS.serverAcquireModelAccess, {
+  payload: ProviderModelAccessInput,
+  success: ProviderModelAccessResult,
+  error: Schema.Union([ProviderLaunchBindingUnavailable, EnvironmentAuthorizationError]),
+});
+
+const WsServerGetProviderLaunchBindingRpc = Rpc.make(WS_METHODS.serverGetProviderLaunchBinding, {
+  payload: ProviderLaunchBindingInput,
+  success: ProviderLaunchBindingResult,
+  error: Schema.Union([ProviderLaunchBindingUnavailable, EnvironmentAuthorizationError]),
 });
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -2476,6 +2599,18 @@ export const WsRpcGroup = RpcGroup.make(
   WsGuestShareCreateRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
+  WsServerNativeEngineStatusRpc,
+  WsServerAttestNativeEngineRpc,
+  WsServerBeginProviderSetupTransportRpc,
+  WsServerTakeProviderSetupTransportRpc,
+  WsServerCompleteProviderSetupTransportRpc,
+  WsServerCloseProviderSetupTransportRpc,
+  WsServerAcquireModelAccessRpc,
+  WsServerGetProviderLaunchBindingRpc,
+  WsServerGetStoredProjectBindingRpc,
+  WsServerReserveCodingThreadRpc,
+  WsServerRecordCodingTranscriptRpc,
+  WsServerRegisterProjectRpc,
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,

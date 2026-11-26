@@ -10,7 +10,11 @@ export const localEmbeddingHeaders = (ancestor: string | undefined, host: string
         url.username === "" &&
         url.password === ""
       ) {
-        return { "Content-Security-Policy": `frame-ancestors ${url.origin}` };
+        return {
+          "Content-Security-Policy":
+            "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; " +
+            `object-src 'none'; frame-ancestors ${url.origin}`,
+        };
       }
     } catch {
       // Invalid supervisor configuration retains the normal frame denial.

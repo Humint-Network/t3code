@@ -1,3 +1,4 @@
+import { CodingNativeCheckpoint, CodingNativeTranscriptInput } from "./codingNativeTranscript.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
@@ -498,6 +499,7 @@ const OrchestrationV2LastTitleRegeneration = Schema.Struct({
 });
 
 export const OrchestrationV2AppThread = Schema.Struct({
+  codingNative: Schema.optional(CodingNativeCheckpoint),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -3822,6 +3824,13 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread.coding-native.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    reservationCreatedAt: IsoDateTime,
+    recording: CodingNativeTranscriptInput,
+  }),
   // The server issues this after checking the value against the run's declared schema.
   Schema.Struct({
     type: Schema.Literal("run.output.submit"),

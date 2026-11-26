@@ -1,3 +1,5 @@
+import * as ProviderSetupTransport from "./provider/ProviderSetupTransport.ts";
+import * as ProviderLaunchBinding from "./provider/ProviderLaunchBinding.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -726,6 +728,7 @@ const layerServerRestart = Layer.effect(
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
+  ProviderLaunchBinding.layer,
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
@@ -1424,6 +1427,7 @@ const layerMakeServer = Layer.unwrap(
       ),
       Layer.provideMerge(layerHttpServer),
       Layer.provide(layerApplicationObservability),
+      Layer.provideMerge(ProviderSetupTransport.layer),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
       Layer.provideMerge(AgentScopeLive.layer),

@@ -30,6 +30,15 @@ model.
   Stored grants are never expanded when scopes split. Auth responses preserve legacy `scopes`
   alongside exact `permissions` so older clients and servers stay compatible.
 
+### Native iCore model access
+
+The iCore-managed supervisor can acquire the current managed ChatGPT access token for an exact
+reviewed provider revision. This operation requires both `providers:manage` and
+`orchestration:operate`; embedded read-only clients cannot call it. It is unavailable outside
+immutable iCore-managed mode, never renews credentials and never exposes refresh or identity tokens.
+The selected instance, account generation and project binding are checked before and after access.
+Only the trusted native supervisor consumes the response; it is not a renderer or mobile read model.
+
 ## Non-standard principals
 
 - **Guest links are not sessions.** [GuestShareService](../../apps/server/src/guest/GuestShareService.ts)
@@ -64,8 +73,9 @@ credential never falls back to the reusable dev credential.
 
 A local supervisor may embed the client by setting `T3CODE_LOCAL_FRAME_ANCESTOR` to its exact
 `http://127.0.0.1:<port>` origin and explicitly binding the T3 server to `127.0.0.1`. Other configurations
-retain frame denial. This changes only the HTML framing policy, never pairing, RPC scopes or provider
-permissions. The supervisor and T3 must use distinct origins and credentials; never expose a native bridge
+retain frame denial. The supervised HTML policy also limits passive images, media and fonts to local
+or in-memory assets, so viewing a conversation does not contact a link's origin or an icon service.
+Pairing, RPC scopes and provider permissions remain separate. The supervisor and T3 must use distinct origins and credentials; never expose a native bridge
 or the supervisor's credential to the embedded client.
 
 Projects are organizational boundaries, not filesystem sandboxes. `filesystem:read` permits reading
@@ -77,3 +87,15 @@ Signed asset URLs are bearer credentials for a single canonical file, rechecked 
 identity on serve ([`AssetAccess.ts`](../../apps/server/src/assets/AssetAccess.ts)). They never
 grant access to sibling files, and because `filesystem:read` is checked only at mint time, an issued
 URL remains valid until it expires even if the session or grant is revoked.
+
+In an iCore-managed companion, ChatGPT authentication uses the native setup transport.
+The companion keeps its existing network isolation. The supervisor opens a bounded
+lease for the current authentication controller, takes each HTTP request once and
+returns its result through maintenance-and-provider-scoped RPCs. Cancellation,
+controller replacement and expiry retire pending requests. A lost response cannot be
+replayed under another lease. Private OAuth forms and responses stay out of embedded
+client grants and observability; standalone T3 keeps its normal HTTP client. Client-mode
+callback delivery remains subject to the existing state, PKCE and identity checks.
+The native mediator must independently enforce fixed destinations, request expiry and
+current setup authority before sending; a successful sign-in does not establish native
+engine readiness or authorize a coding run.

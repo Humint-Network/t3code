@@ -1,3 +1,5 @@
+import * as CodingNativeTranscriptPlan from "./CodingNativeTranscriptPlan.ts";
+import * as Config from "effect/Config";
 import type {
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
@@ -639,6 +641,7 @@ export function threadHasUnfinishedWork(records: {
 
 function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
   switch (command.type) {
+    case "thread.coding-native.record":
     case "thread.create":
     case "thread.archive":
     case "thread.unarchive":
@@ -1644,6 +1647,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const commandReceipts = yield* CommandReceiptStoreV2;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
+  const codingNativeManaged = yield* Config.Boolean("T3CODE_ICORE_PROJECTS").pipe(
+    Config.withDefault(false),
+    Effect.orDie,
+  );
   const taskFolderStore = yield* TaskFolderStore.TaskFolderStore;
   const projectionStore = yield* ProjectionStoreV2;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
@@ -15821,6 +15828,58 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
     );
 
+  const dispatchCodingNativeRecord = Effect.fn("Orchestrator.dispatchCodingNativeRecord")(
+    function* (
+      command: Extract<
+        OrchestrationV2InternalCommand,
+        { readonly type: "thread.coding-native.record" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const unavailable = () =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The native transcript recording is unavailable.",
+        });
+      if (
+        !codingNativeManaged ||
+        command.commandId !== CodingNativeTranscriptPlan.commandId(command.recording)
+      )
+        return yield* unavailable();
+      const project = yield* projects
+        .get(command.recording.reservation.projectId, { includeDeleted: true })
+        .pipe(Effect.mapError(unavailable));
+      if (
+        Option.isNone(project) ||
+        project.value.deletedAt !== null ||
+        project.value.archivedAt !== null
+      )
+        return yield* unavailable();
+      const projection = yield* projectionStore
+        .getThreadRecords(command.threadId, [
+          "messages",
+          "turnItems",
+          "runs",
+          "providerThreads",
+          "providerSessions",
+        ])
+        .pipe(mapDispatchError(command));
+      const now = yield* DateTime.now;
+      const planned = yield* Effect.try({
+        try: () =>
+          CodingNativeTranscriptPlan.plan(
+            projection,
+            command.recording,
+            command.reservationCreatedAt,
+            now,
+          ),
+        catch: unavailable,
+      });
+      for (const event of planned) yield* emit(events, command)<OrchestrationV2DomainEvent>(event);
+    },
+  );
+
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
     sideChatIds: ReadonlyArray<ThreadId>,
@@ -16268,6 +16327,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "delegated_task.completion-delivery.dispose":
         updateDelegatedCompletionOnlyRunId =
           yield* dispatchDelegatedTaskCompletionDeliveryResolution(command, events);
+        break;
+      case "thread.coding-native.record":
+        yield* dispatchCodingNativeRecord(command, events);
         break;
       case "thread.created.record":
         yield* dispatchCreatedThreadRecord(command, events);

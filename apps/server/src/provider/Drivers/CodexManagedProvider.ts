@@ -4,6 +4,9 @@ import {
   TextGenerationError,
   type CodexSettings,
 } from "@t3tools/contracts";
+import * as Config from "effect/Config";
+import * as NativeReadiness from "../NativeCodexReadiness.ts";
+import * as ProviderSetupTransport from "../ProviderSetupTransport.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -36,6 +39,11 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   input: ProviderDriverCreateInput<CodexSettings>,
 ) {
   const { instanceId, enabled, displayName, accentColor, config } = input;
+  const managed = yield* Config.Boolean("T3CODE_ICORE_PROJECTS").pipe(
+    Config.withDefault(false),
+    Effect.orDie,
+  );
+  const transport = yield* Effect.serviceOption(ProviderSetupTransport.ProviderSetupTransport);
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -46,7 +54,16 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     enabled,
     config,
     environment: yield* mergeProviderInstanceEnvironment(input.environment),
-  });
+  }).pipe(
+    Effect.mapError(
+      () =>
+        new ProviderDriverError({
+          driver: DRIVER,
+          instanceId,
+          detail: "Return to iCore to connect this account.",
+        }),
+    ),
+  );
   const continuationIdentity = codexContinuationIdentity(runtime.homeLayout);
   const stamp = withInstanceIdentity({
     instanceId,
@@ -73,6 +90,19 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const check = Effect.gen(function* () {
     const base = yield* pending;
     if (!enabled) return base;
+    if (managed) {
+      if (Option.isNone(transport)) return base;
+      const mediator = transport.value;
+      const proof = yield* mediator.engine(instanceId).pipe(Effect.option);
+      const result = yield* NativeReadiness.check({
+        base,
+        auth: runtime.auth,
+        engine: mediator.engine(instanceId),
+      });
+      if (Option.isSome(proof))
+        yield* mediator.settle(instanceId, proof.value.check, result.status === "ready");
+      return result;
+    }
     const executable = yield* runtime.installation.resolve().pipe(Effect.option);
     if (Option.isNone(executable))
       return {
@@ -222,6 +252,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     haveSettingsChanged: () => false,
     initialSnapshot: () => pending,
     checkProvider: check,
+    refreshOnInterval: !managed,
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -233,6 +264,12 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         }),
     ),
   );
+  if (managed && Option.isSome(transport))
+    yield* transport.value.engineChanges(instanceId).pipe(
+      Stream.runForEach(() => snapshot.refresh),
+      Effect.ignoreCause,
+      Effect.forkScoped,
+    );
   yield* runtime.auth.controller.subscribe("managed-codex-snapshot").pipe(
     Stream.filter((state) => ["idle", "succeeded", "failed", "cancelled"].includes(state.phase)),
     // Sign-out interrupts in-flight probes; keep listening for its subsequent idle refresh.
@@ -304,43 +341,45 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     textGeneration,
     auth: runtime.auth.controller,
     snapshotForCwd: (cwd: string) =>
-      enabled
-        ? resolveRuntime.pipe(
-            Effect.matchEffect({
-              // Signed-out snapshots have an empty inventory; a signed-in runtime failure must fail the scan.
-              onFailure: (cause) =>
-                snapshot.getSnapshot.pipe(
-                  Effect.filterOrFail(
-                    (machine) => machine.auth.status === "unauthenticated",
-                    () => cause,
+      managed
+        ? snapshot.getSnapshot
+        : enabled
+          ? resolveRuntime.pipe(
+              Effect.matchEffect({
+                // Signed-out snapshots have an empty inventory; a signed-in runtime failure must fail the scan.
+                onFailure: (cause) =>
+                  snapshot.getSnapshot.pipe(
+                    Effect.filterOrFail(
+                      (machine) => machine.auth.status === "unauthenticated",
+                      () => cause,
+                    ),
                   ),
-                ),
-              onSuccess: (effective) =>
-                probeCodexSkillsForCwd({
-                  binaryPath: effective.config.binaryPath,
-                  homePath: effective.config.homePath,
-                  launchArgs: effective.config.launchArgs,
-                  cwd,
-                  environment: effective.environment,
-                }).pipe(
-                  Effect.flatMap((skills) =>
-                    snapshot.getSnapshot.pipe(Effect.map((draft) => ({ ...draft, skills }))),
+                onSuccess: (effective) =>
+                  probeCodexSkillsForCwd({
+                    binaryPath: effective.config.binaryPath,
+                    homePath: effective.config.homePath,
+                    launchArgs: effective.config.launchArgs,
+                    cwd,
+                    environment: effective.environment,
+                  }).pipe(
+                    Effect.flatMap((skills) =>
+                      snapshot.getSnapshot.pipe(Effect.map((draft) => ({ ...draft, skills }))),
+                    ),
                   ),
-                ),
-            }),
-            Effect.scoped,
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            // Fail instead of returning machine inventory, which the registry would publish as workspace inventory.
-            Effect.mapError(
-              (cause) =>
-                new ProviderDriverError({
-                  driver: DRIVER,
-                  instanceId,
-                  detail: `Failed to probe Codex skills for '${cwd}'`,
-                  cause,
-                }),
-            ),
-          )
-        : snapshot.getSnapshot,
+              }),
+              Effect.scoped,
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              // Fail instead of returning machine inventory, which the registry would publish as workspace inventory.
+              Effect.mapError(
+                (cause) =>
+                  new ProviderDriverError({
+                    driver: DRIVER,
+                    instanceId,
+                    detail: `Failed to probe Codex skills for '${cwd}'`,
+                    cause,
+                  }),
+              ),
+            )
+          : snapshot.getSnapshot,
   } satisfies ProviderInstance;
 });

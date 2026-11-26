@@ -500,11 +500,16 @@ it.layer(
           localFrameAncestor: "http://127.0.0.1:8765",
         }),
       );
-      for (const resource of ["/", "/threads/example"]) {
-        const response = yield* request(resource);
+      for (const [resource, method] of [
+        ["/", "GET"],
+        ["/threads/example", "GET"],
+        ["/", "HEAD"],
+        ["/threads/example", "HEAD"],
+      ] as const) {
+        const response = yield* request(resource, { method });
         expect(response.status).toBe(200);
         expect(response.headers["content-security-policy"]).toBe(
-          "frame-ancestors http://127.0.0.1:8765",
+          "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; object-src 'none'; frame-ancestors http://127.0.0.1:8765",
         );
         expect(response.headers["x-frame-options"]).toBeUndefined();
       }

@@ -10,6 +10,7 @@ import {
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Config from "effect/Config";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -120,6 +121,14 @@ interface RefreshRequest {
 }
 
 export const make = Effect.gen(function* () {
+  // Managed companion events are metadata only; repository/network work belongs
+  // to an independently approved worker, including after restart/backfill.
+  const managed = yield* Config.Boolean("T3CODE_ICORE_PROJECTS").pipe(
+    Config.withDefault(false),
+    Effect.orDie,
+  );
+  if (managed) return { start: () => Effect.void, drain: Effect.void };
+
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const git = yield* GitManager.GitManager;

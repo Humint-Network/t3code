@@ -17,6 +17,18 @@ import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [WS_METHODS.serverNativeEngineStatus]: AuthProvidersManageScope,
+  [WS_METHODS.serverAttestNativeEngine]: AuthProvidersManageScope,
+  [WS_METHODS.serverBeginProviderSetupTransport]: AuthProvidersManageScope,
+  [WS_METHODS.serverTakeProviderSetupTransport]: AuthProvidersManageScope,
+  [WS_METHODS.serverCompleteProviderSetupTransport]: AuthProvidersManageScope,
+  [WS_METHODS.serverCloseProviderSetupTransport]: AuthProvidersManageScope,
+  [WS_METHODS.serverAcquireModelAccess]: AuthProvidersManageScope,
+  [WS_METHODS.serverGetProviderLaunchBinding]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverGetStoredProjectBinding]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverReserveCodingThread]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.serverRecordCodingTranscript]: AuthEnvironmentMaintainScope,
+  [WS_METHODS.serverRegisterProject]: AuthEnvironmentMaintainScope,
   [WS_METHODS.providerAuthRemoveMethod]: AuthProvidersManageScope,
   // An MCP sign-in stores a credential for the agent, as an account sign-in does.
   [WS_METHODS.providerMcpSignInStart]: AuthProvidersManageScope,
@@ -111,6 +123,17 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method === WS_METHODS.serverNativeEngineStatus ||
+    method === WS_METHODS.serverAttestNativeEngine ||
+    method === WS_METHODS.serverBeginProviderSetupTransport ||
+    method === WS_METHODS.serverTakeProviderSetupTransport ||
+    method === WS_METHODS.serverCompleteProviderSetupTransport ||
+    method === WS_METHODS.serverCloseProviderSetupTransport
+  )
+    return [AuthProvidersManageScope, AuthEnvironmentMaintainScope];
+  if (method === WS_METHODS.serverAcquireModelAccess)
+    return [AuthProvidersManageScope, AuthOrchestrationOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

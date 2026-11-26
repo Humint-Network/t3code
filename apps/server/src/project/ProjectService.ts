@@ -1,3 +1,5 @@
+import * as Config from "effect/Config";
+import { registrationAuthority } from "./ProjectRegistrationAuthority.ts";
 import {
   CommandId,
   type OrchestrationProjectShell,
@@ -55,6 +57,7 @@ import {
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
+  readonly registrationAuthority?: typeof registrationAuthority;
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
 }
@@ -193,6 +196,16 @@ export class ProjectService extends Context.Service<
 const FOLDER_SYNC_INTERVAL_MS = 30_000;
 
 export const make = Effect.gen(function* () {
+  // Captured once at service construction, never selected by an RPC payload.
+  const icoreManaged = yield* Config.Boolean("T3CODE_ICORE_PROJECTS").pipe(
+    Config.withDefault(false),
+    Effect.orDie,
+  );
+  const refuseManagedMutation = (projectId: ProjectId) =>
+    new ProjectInvalidError({
+      projectId,
+      detail: "Manage this project through its current iCore connection.",
+    });
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
@@ -268,6 +281,7 @@ export const make = Effect.gen(function* () {
   });
 
   const hydrate = Effect.fn("ProjectService.hydrate")(function* (row: ProjectStore.ProjectRow) {
+    if (icoreManaged) return toProject(row, null);
     if (row.deletedAt === null) {
       yield* syncFolders(row).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope));
     }
@@ -406,7 +420,7 @@ export const make = Effect.gen(function* () {
         command = refined.value;
       }
       const workspaceOwner =
-        workspaceRoot === undefined
+        workspaceRoot === undefined || icoreManaged
           ? undefined
           : Option.getOrUndefined(
               yield* projects
@@ -500,6 +514,7 @@ export const make = Effect.gen(function* () {
 
   const workspaceScanDirectory = Effect.fn("ProjectService.workspaceScanDirectory")(
     function* (cwd: string) {
+      if (icoreManaged) return cwd;
       if (yield* fileSystem.exists(cwd).pipe(Effect.orElseSucceed(() => true))) return cwd;
       if (!(yield* isManagedWorktreePath(cwd))) return cwd;
       const snapshot = yield* Effect.flatten(
@@ -517,6 +532,7 @@ export const make = Effect.gen(function* () {
   const getByWorkspaceRoot: ProjectService["Service"]["getByWorkspaceRoot"] = Effect.fn(
     "ProjectService.getByWorkspaceRoot",
   )(function* (workspaceRoot, options) {
+    if (icoreManaged) return Option.none();
     const normalized = yield* normalizeWorkspaceRoot({ workspaceRoot });
     const row = yield* (
       options?.includeDeleted === true
@@ -536,6 +552,54 @@ export const make = Effect.gen(function* () {
 
   const create: ProjectService["Service"]["create"] = Effect.fn("ProjectService.create")(
     function* (input) {
+      if (icoreManaged) {
+        if (input.registrationAuthority !== registrationAuthority)
+          return yield* refuseManagedMutation(input.projectId);
+        const folders = input.trackedFolders ?? [];
+        const roots = [input.workspaceRoot, ...folders.map((folder) => folder.path)];
+        if (
+          !/^icore-[a-f0-9]{48}$/.test(input.projectId) ||
+          !input.title.trim() ||
+          input.title.length > 120 ||
+          folders.length > 19 ||
+          new Set(roots).size !== roots.length ||
+          roots.some(
+            (root) =>
+              !root.startsWith("/") ||
+              root === "/" ||
+              root.length > 4096 ||
+              /[\x00-\x1f\x7f]/.test(root) ||
+              path.normalize(root) !== root,
+          ) ||
+          folders.some((folder) => "discovered" in folder && folder.discovered === true) ||
+          input.createWorkspaceRootIfMissing === true ||
+          (input.scripts?.length ?? 0) > 0 ||
+          input.defaultModelSelection != null
+        )
+          return yield* refuseManagedMutation(input.projectId);
+        yield* commit({
+          type: "project.create",
+          commandId: input.commandId,
+          projectId: input.projectId,
+          title: input.title,
+          workspaceRoot: input.workspaceRoot,
+          scripts: [],
+          trackedFolders: folders,
+        });
+        const project = yield* readCommitted(input.projectId);
+        // The durable receipt owns a command ID. Never report a different retry payload as accepted.
+        if (
+          project.deletedAt !== null ||
+          project.title !== input.title ||
+          project.workspaceRoot !== input.workspaceRoot ||
+          (project.trackedFolders ?? []).length !== folders.length ||
+          (project.trackedFolders ?? []).some((folder, i) => folder.path !== folders[i]?.path)
+        )
+          return yield* refuseManagedMutation(input.projectId);
+        return project;
+      }
+      if (input.registrationAuthority !== undefined)
+        return yield* refuseManagedMutation(input.projectId);
       yield* rejectWslSharePath(input.projectId, input.workspaceRoot);
       const workspaceRoot = yield* normalizeWorkspaceRoot({
         projectId: input.projectId,
@@ -564,6 +628,7 @@ export const make = Effect.gen(function* () {
 
   const update: ProjectService["Service"]["update"] = Effect.fn("ProjectService.update")(
     function* (input) {
+      if (icoreManaged) return yield* refuseManagedMutation(input.projectId);
       const existing = yield* readRow(input.projectId);
       if (Option.isNone(existing)) {
         return yield* new ProjectNotFoundError({ projectId: input.projectId });
@@ -649,6 +714,7 @@ export const make = Effect.gen(function* () {
 
   const bootstrap: ProjectService["Service"]["bootstrap"] = Effect.fn("ProjectService.bootstrap")(
     function* (input) {
+      if (icoreManaged) return yield* refuseManagedMutation(input.projectId);
       const existing = yield* getByWorkspaceRoot(input.workspaceRoot);
       if (Option.isSome(existing)) return { project: existing.value, created: false };
       return { project: yield* create(input), created: true };
@@ -760,6 +826,7 @@ export const make = Effect.gen(function* () {
 
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {
+      if (icoreManaged) return yield* refuseManagedMutation(input.projectId);
       const { projectId } = input;
       // Read deleted rows so retries replay receipts and other command ids fail as not found.
       const existing = yield* readRow(projectId, { includeDeleted: true });
@@ -781,12 +848,14 @@ export const make = Effect.gen(function* () {
   );
 
   const enrichShell = (shell: OrchestrationProjectShell) =>
-    projectEnrichment.getAvailable(shell.workspaceRoot).pipe(
-      Effect.map((enrichment) => ({
-        ...shell,
-        repositoryIdentity: enrichment.repositoryIdentity,
-      })),
-    );
+    icoreManaged
+      ? Effect.succeed(shell)
+      : projectEnrichment.getAvailable(shell.workspaceRoot).pipe(
+          Effect.map((enrichment) => ({
+            ...shell,
+            repositoryIdentity: enrichment.repositoryIdentity,
+          })),
+        );
 
   const getShell: ProjectService["Service"]["getShell"] = Effect.fn("ProjectService.getShell")(
     function* (projectId) {
@@ -837,7 +906,7 @@ export const make = Effect.gen(function* () {
         (row) =>
           hydrate(row).pipe(
             Effect.filterOrElse(
-              (project) => project.repositoryIdentity !== null,
+              (project) => icoreManaged || project.repositoryIdentity !== null,
               (project) =>
                 projectEnrichment
                   .readRepositoryIdentity(project.workspaceRoot)

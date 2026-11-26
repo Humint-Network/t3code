@@ -27,6 +27,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -40,6 +41,16 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("reserves new Coding conversations for the supervisor maintenance scope", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverReserveCodingThread)).toBe(
+      AuthEnvironmentMaintainScope,
+    );
+  });
+  it("reserves iCore project registration for the supervisor maintenance scope", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverRegisterProject)).toBe(
+      AuthEnvironmentMaintainScope,
+    );
+  });
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
@@ -836,5 +847,152 @@ it.effect("requires provider management to send /logout through chat", () =>
       "kept-attachments-edit",
       "manager",
     ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("model access requires provider management and operation authority together", () =>
+  Effect.gen(function* () {
+    const method = WS_METHODS.serverAcquireModelAccess;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof method> => tag !== method,
+      ),
+    );
+    let calls = 0;
+    const payload = {
+      projectId: ProjectId.make("icore-" + "a".repeat(48)),
+      instanceId: ProviderInstanceId.make("qa-account"),
+      model: "qa-model",
+      runtimeMode: "approval-required" as const,
+      revision: "b".repeat(64),
+    };
+    const handler = group.toLayer({
+      [method]: () =>
+        Effect.sync(() => {
+          calls++;
+          return {
+            binding: {
+              instance: payload.instanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: payload.model,
+              runtime_mode: payload.runtimeMode,
+              revision: payload.revision,
+              available: true as const,
+            },
+            accessToken: "synthetic",
+            expiresAt: 60_000,
+            kind: "chatgpt-managed" as const,
+            resource: "https://api.openai.com/v1" as const,
+          };
+        }),
+    });
+    for (const scopes of [
+      [],
+      [AuthOrchestrationReadScope],
+      [AuthProvidersManageScope],
+      [AuthOrchestrationOperateScope],
+    ]) {
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handler, RpcAuthorization.layer(scopes))),
+      );
+      yield* client[method](payload).pipe(Effect.flip);
+    }
+    expect(calls).toBe(0);
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          handler,
+          RpcAuthorization.layer([AuthProvidersManageScope, AuthOrchestrationOperateScope]),
+        ),
+      ),
+    );
+    expect((yield* client[method](payload)).accessToken).toBe("synthetic");
+    expect(calls).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("native account setup requires provider management and maintenance together", () =>
+  Effect.gen(function* () {
+    const methods = [
+      WS_METHODS.serverBeginProviderSetupTransport,
+      WS_METHODS.serverTakeProviderSetupTransport,
+      WS_METHODS.serverCompleteProviderSetupTransport,
+      WS_METHODS.serverCloseProviderSetupTransport,
+      WS_METHODS.serverAttestNativeEngine,
+      WS_METHODS.serverNativeEngineStatus,
+    ] as const;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof methods)[number]> =>
+          !methods.some((method) => method === tag),
+      ),
+    );
+    let calls = 0;
+    const counted = <A>(value: A) =>
+      Effect.sync(() => {
+        calls++;
+        return value;
+      });
+    const handler = group.toLayer({
+      [methods[0]]: () => counted({ lease: "a".repeat(64) }),
+      [methods[1]]: () => counted(null),
+      [methods[2]]: () => counted(undefined),
+      [methods[3]]: () => counted(undefined),
+      [methods[4]]: () => counted({ check: "c".repeat(64), phase: "pending" as const }),
+      [methods[5]]: () => counted({ check: "c".repeat(64), phase: "ready" as const }),
+    });
+    for (const scopes of [
+      [],
+      [AuthOrchestrationReadScope],
+      [AuthProvidersManageScope],
+      [AuthEnvironmentMaintainScope],
+    ]) {
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handler, RpcAuthorization.layer(scopes))),
+      );
+      yield* client[methods[0]]({ instanceId: ProviderInstanceId.make("qa") }).pipe(
+        Effect.exit,
+        Effect.tap((exit) => Effect.sync(() => expect(Exit.isFailure(exit)).toBe(true))),
+      );
+      yield* client[methods[1]]({ lease: "a".repeat(64) }).pipe(
+        Effect.exit,
+        Effect.tap((exit) => Effect.sync(() => expect(Exit.isFailure(exit)).toBe(true))),
+      );
+      yield* client[methods[2]]({ lease: "a".repeat(64), id: "b".repeat(64), response: null }).pipe(
+        Effect.exit,
+        Effect.tap((exit) => Effect.sync(() => expect(Exit.isFailure(exit)).toBe(true))),
+      );
+      yield* client[methods[3]]({ lease: "a".repeat(64) }).pipe(
+        Effect.exit,
+        Effect.tap((exit) => Effect.sync(() => expect(Exit.isFailure(exit)).toBe(true))),
+      );
+      yield* client[methods[4]]({
+        lease: "a".repeat(64),
+        engine: { revision: "b".repeat(64), version: "1" },
+      }).pipe(
+        Effect.exit,
+        Effect.tap((exit) => Effect.sync(() => expect(Exit.isFailure(exit)).toBe(true))),
+      );
+      yield* client[methods[5]]({ lease: "a".repeat(64), check: "c".repeat(64) }).pipe(
+        Effect.exit,
+        Effect.tap((exit) => Effect.sync(() => expect(Exit.isFailure(exit)).toBe(true))),
+      );
+    }
+    expect(calls).toBe(0);
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          handler,
+          RpcAuthorization.layer([AuthProvidersManageScope, AuthEnvironmentMaintainScope]),
+        ),
+      ),
+    );
+    const lease = yield* client[methods[0]]({ instanceId: ProviderInstanceId.make("qa") });
+    yield* client[methods[1]](lease);
+    yield* client[methods[2]]({ ...lease, id: "b".repeat(64), response: null });
+    yield* client[methods[3]](lease);
+    yield* client[methods[4]]({ ...lease, engine: { revision: "b".repeat(64), version: "1" } });
+    yield* client[methods[5]]({ ...lease, check: "c".repeat(64) });
+    expect(calls).toBe(6);
   }).pipe(Effect.scoped),
 );

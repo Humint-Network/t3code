@@ -395,6 +395,16 @@ describe("instance-scoped model selection", () => {
 
   describe.each([
     {
+      driverName: "codex",
+      availableModel: "gpt-6-astra",
+      missingModel: "qa-model",
+    },
+    {
+      driverName: "claudeAgent",
+      availableModel: "claude-sonnet-4-6",
+      missingModel: "qa-model",
+    },
+    {
       driverName: "pi",
       availableModel: "default",
       missingModel: "anthropic/claude-sonnet-4",

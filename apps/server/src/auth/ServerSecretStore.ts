@@ -1,4 +1,6 @@
 import * as Context from "effect/Context";
+import * as Mac from "effect/crypto/Mac";
+import * as Hex from "effect/encoding/Hex";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -152,6 +154,7 @@ export class ServerSecretStore extends Context.Service<
   ServerSecretStore,
   {
     readonly directory?: string;
+    readonly revision?: (name: string) => Effect.Effect<Option.Option<string>, SecretStoreError>;
     readonly get: (name: string) => Effect.Effect<Option.Option<Uint8Array>, SecretStoreError>;
     readonly set: (name: string, value: Uint8Array) => Effect.Effect<void, SecretStoreError>;
     readonly create: (name: string, value: Uint8Array) => Effect.Effect<void, SecretStoreError>;
@@ -166,6 +169,32 @@ export class ServerSecretStore extends Context.Service<
 /** @public */
 export const make = Effect.gen(function* () {
   const crypto = yield* SecureRandom.SecureRandom;
+  const mac = yield* Mac.Mac;
+  const revisionKey = yield* mac.generateKey(Mac.hmacSha256);
+  const generations = new Map<string, { value: bigint; pending: number }>();
+  const generation = (name: string) => {
+    let state = generations.get(name);
+    if (state === undefined) {
+      state = { value: 0n, pending: 0 };
+      generations.set(name, state);
+    }
+    return state;
+  };
+  const mutating = <A, E, R>(name: string, operation: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const state = generation(name);
+        state.value += 1n;
+        state.pending += 1;
+        return state;
+      }),
+      () => operation,
+      (state) =>
+        Effect.sync(() => {
+          state.value += 1n;
+          state.pending -= 1;
+        }),
+    );
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -212,7 +241,7 @@ export const make = Effect.gen(function* () {
 
   const set: ServerSecretStore["Service"]["set"] = (name, value) =>
     resolveSecretPath(name).pipe(
-      Effect.flatMap((secretPath) => setAt(name, secretPath, value)),
+      Effect.flatMap((secretPath) => mutating(name, setAt(name, secretPath, value))),
       Effect.withSpan("ServerSecretStore.set"),
     );
 
@@ -253,7 +282,9 @@ export const make = Effect.gen(function* () {
   // `link` publishes the fully written temp file under the final name, or fails with
   // AlreadyExists, so a concurrent reader never observes a partially written secret.
   const create: ServerSecretStore["Service"]["create"] = (name, value) =>
-    resolveSecretPath(name).pipe(Effect.flatMap((secretPath) => createAt(name, secretPath, value)));
+    resolveSecretPath(name).pipe(
+      Effect.flatMap((secretPath) => mutating(name, createAt(name, secretPath, value))),
+    );
 
   const createAt = (name: string, secretPath: string, value: Uint8Array) =>
     crypto.uuidV4().pipe(
@@ -347,24 +378,60 @@ export const make = Effect.gen(function* () {
   const remove: ServerSecretStore["Service"]["remove"] = (name) =>
     resolveSecretPath(name).pipe(
       Effect.flatMap((secretPath) =>
-        fileSystem.remove(secretPath).pipe(
-          Effect.catch((cause) =>
-            cause.reason._tag === "NotFound"
-              ? Effect.void
-              : Effect.fail(
-                  new SecretStoreRemoveError({
-                    resource: `secret ${name}`,
-                    cause,
-                  }),
-                ),
+        mutating(
+          name,
+          fileSystem.remove(secretPath).pipe(
+            Effect.catch((cause) =>
+              cause.reason._tag === "NotFound"
+                ? Effect.void
+                : Effect.fail(
+                    new SecretStoreRemoveError({
+                      resource: `secret ${name}`,
+                      cause,
+                    }),
+                  ),
+            ),
           ),
         ),
       ),
       Effect.withSpan("ServerSecretStore.remove"),
     );
 
+  const revision = Effect.fn("ServerSecretStore.revision")(function* (name: string) {
+    yield* resolveSecretPath(name);
+    const state = generation(name);
+    const before = state.value;
+    if (state.pending !== 0) return Option.none<string>();
+    return yield* Effect.gen(function* () {
+      const current = yield* get(name);
+      if (Option.isNone(current) || current.value.byteLength === 0) return Option.none<string>();
+      const header = new TextEncoder().encode(
+        `${name.length}:${name}:${before}:${current.value.byteLength}:`,
+      );
+      const payload = new Uint8Array(header.byteLength + current.value.byteLength);
+      payload.set(header);
+      payload.set(current.value, header.byteLength);
+      const tag = yield* mac
+        .sign(revisionKey, payload)
+        .pipe(
+          Effect.mapError(
+            (cause) => new SecretStoreReadError({ resource: "credential revision", cause }),
+          ),
+        );
+      if (state.pending !== 0 || state.value !== before) return Option.none<string>();
+      return Option.some(Hex.encode(tag));
+    }).pipe(
+      Effect.onError(() =>
+        Effect.sync(() => {
+          state.value += 1n;
+        }),
+      ),
+    );
+  });
+
   return ServerSecretStore.of({
     directory: serverConfig.secretsDir,
+    revision,
     get,
     set,
     create,

@@ -69,6 +69,11 @@ once it has one.
 
 ## Intended, not vulnerabilities
 
+- In iCore-managed mode, the native supervisor may acquire an unexpired managed ChatGPT access
+  token for an exact current provider/project revision with both `providers:manage` and
+  `orchestration:operate`. This neither renews the account nor grants execution to embedded readers.
+  The token must remain in trusted model transport and out of renderers, agent workers and logs.
+
 - An explicitly configured local supervisor can frame the client from one exact loopback origin.
   The default remains frame denial; local embedding changes no authentication or execution grant.
 
@@ -119,3 +124,12 @@ once it has one.
   public PRs until the fix ships.
 - When a boundary here changes, update this file and the internal doc that
   explains it in the same PR.
+
+The iCore-managed account setup transport is available only to the native supervisor
+with both provider-management and environment-maintenance authority. Its short-lived
+leases bind the current authentication controller; embedded clients cannot obtain
+OAuth request bodies or token responses. It admits only the fixed authorization
+origin and model catalog, bounds messages and pending work, and rejects late or
+repeated responses. It does not expand the companion's OS network policy. The native
+mediator separately owns destination validation, callback delivery and continuing
+owner authority. This transport is not a generic HTTP proxy or a coding execution grant.

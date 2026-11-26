@@ -17,6 +17,7 @@ export const make = Effect.fn("ProviderCredentialStore.make")(function* (
   return {
     binding: { owner: "t3" as const, key },
     get: secrets.get(key),
+    revision: secrets.revision ? secrets.revision(key) : Effect.succeedNone,
     set: (credentials: Uint8Array) => secrets.set(key, credentials),
     remove: secrets.remove(key),
   };
